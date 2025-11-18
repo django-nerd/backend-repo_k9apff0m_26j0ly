@@ -5,20 +5,17 @@ from datetime import datetime
 from typing import List, Optional, Dict, Any
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.middleware import cors
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 import pandas as pd
 import numpy as np
-from sklearn.ensemble import IsolationForest
-from sklearn.model_selection import train_test_split
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import classification_report
 
 from database import db
 
-app = FastAPI(title="Data Intelligence Platform", version="0.1.2")
+app = FastAPI(title="Data Intelligence Platform", version="0.1.3")
 
 app.add_middleware(
     CORSMiddleware,
@@ -177,18 +174,31 @@ async def summary(dataset_id: str):
     # Correlation
     corr = None
     if len(numeric_cols) >= 2:
-        corr = df[numeric_cols].corr(numeric_only=True).fillna(0).to_dict()
+        try:
+            corr_df = df[numeric_cols].corr(numeric_only=True)
+            if corr_df is not None:
+                corr = corr_df.fillna(0).to_dict()
+        except Exception:
+            corr = None
 
-    # Anomaly detection using Isolation Forest for numeric features
-    anomalies = {}
+    # Lightweight anomaly detection without external ML deps:
+    # Use row-wise max absolute z-score across numeric columns and flag > 3 as anomaly
+    anomalies: Dict[str, Any] = {}
     try:
         if len(numeric_cols) > 0 and len(df) > 10:
-            iso = IsolationForest(contamination=0.05, random_state=42)
-            scores = iso.fit_predict(df[numeric_cols].fillna(0))
+            sub = df[numeric_cols].astype(float)
+            mu = sub.mean(axis=0)
+            sigma = sub.std(axis=0).replace(0, np.nan)
+            z = (sub - mu) / sigma
+            z = z.fillna(0)
+            row_max_abs_z = z.abs().max(axis=1)
+            idx = row_max_abs_z[row_max_abs_z > 3].index.tolist()
             anomalies = {
-                "count": int((scores == -1).sum()),
-                "indices": [int(i) for i, v in enumerate(scores) if v == -1]
+                "count": int(len(idx)),
+                "indices": [int(i) for i in idx]
             }
+        else:
+            anomalies = {"count": 0, "indices": []}
     except Exception as e:
         anomalies = {"error": str(e)}
 
